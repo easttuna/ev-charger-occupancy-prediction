@@ -36,7 +36,7 @@ def extract_occupancy_reg(cid_df, start_date, end_date, interval_min):
         interval_min (int): window size (minute)
 
     Returns:
-        pd.Series: Returns the occupancy time for each period
+        pd.Series: Returns the occupancy rate for each period
     """
     n_days = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days + 1
     time_idx = pd.date_range(start=start_date, freq='1min', periods=n_days*24*60)
