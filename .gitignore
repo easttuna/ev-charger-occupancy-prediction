@@ -133,3 +133,7 @@ data/
 
 # model eval result
 results/
+images/
+
+# log
+nohup.out
