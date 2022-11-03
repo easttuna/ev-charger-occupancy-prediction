@@ -3,7 +3,6 @@ import pandas as pd
 from tqdm import tqdm
 
 
-# split a multivariate sequence into samples
 def split_sequences(sequences, n_steps_in, n_steps_out, n_history):
     """transforms target sequence table to historic/real-time/target sequence features)
 
@@ -18,16 +17,19 @@ def split_sequences(sequences, n_steps_in, n_steps_out, n_history):
     """
     size = sequences.shape[1]
     rs = np.empty((0,n_steps_in))
-    hs = np.empty((0,n_history))
+    hs = np.empty((0, n_steps_out, n_history))
     ys = np.empty((0,n_steps_out))
 
     for idx in range(n_history * 336 - n_steps_in, size - (n_steps_in + n_steps_out)):
         r = sequences[:,idx:idx+n_steps_in]
         rs = np.vstack([rs, r])
+        
+        h = sequences[:, [idx + n_steps_in + out_step - 336*hist_step for out_step in range(n_steps_out) for hist_step in range(n_history, 0, -1)]]
+        h = h.reshape(-1,n_steps_out, n_history)
+        hs = np.vstack([hs, h])
+
         y = sequences[:, idx+n_steps_in:idx+n_steps_in+n_steps_out]
         ys = np.vstack([ys, y])
-        h = sequences[:, [idx + n_steps_in - 336*n for n in range(n_history, 0, -1)]]
-        hs = np.vstack([hs, h])
 
     return rs, hs, ys
 
@@ -37,7 +39,7 @@ def time_features(time_idx, n_steps_in, n_steps_out, n_history, n_stations):
     df['t_index']  = df['time'].dt.hour.multiply(60).add(df['time'].dt.minute).floordiv(30)
     df['dow'] = df['time'].dt.dayofweek
     df['weekend'] = df.dow.isin([5,6]).astype(np.int64)
-    del df['time']
+    df = df[['t_index', 'dow', 'weekend']]
 
     ts = np.empty((0,n_steps_out,3))
     for idx in range(n_history * 336 - n_steps_in, len(time_idx) - (n_steps_in + n_steps_out)):
@@ -64,14 +66,22 @@ if __name__ == '__main__':
     station = pd.read_csv('./data/input_table/station_info.csv')
     data = charge.set_index('time').T.reset_index().rename(columns={'index':'station_name'})
     data = data[data.station_name.isin(station.station_name)].set_index('station_name')
-    data = data[data.mean(axis=1).le(0.8)]
+    data = data[:50]
+
+    N_IN = 12
+    N_OUT = 6
+    N_HIST = 3
 
     print('Split Sequences..')
-    R, H, Y = split_sequences(sequences=data.values, n_steps_in=12, n_steps_out=6, n_history=3)
+    R, H, Y = split_sequences(sequences=data.values, n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST)
     print('Done!')
     print(R.shape, H.shape, Y.shape)
 
     print('Generate time features...')
-    T = time_features(time_idx=data.columns, n_steps_in=12, n_steps_out=6, n_history=3, n_stations=data.shape[0])
+    T = time_features(time_idx=data.columns, n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST, n_stations=data.shape[0])
     print('Done!')
     print(T.shape)
+
+    print('Generate station features...')
+    S = station_features(station_array=data.index, station_df=station, n_windows=data.shape[1] - (N_OUT+336*N_HIST))
+    print(S.shape)
