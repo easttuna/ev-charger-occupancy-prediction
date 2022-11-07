@@ -3,7 +3,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, recall_score, precision_score, f1_score, accuracy_score, roc_auc_score, balanced_accuracy_score
 import matplotlib.pyplot as plt
 
 from utils import split_sequences, station_features, time_features
@@ -14,7 +14,8 @@ from basemodels import HistoricBase, RealtimeBase, MultiSeqBase, GatingSeqBase, 
 
 def train(model, train_dataloader, optim, epoch, verbose=0):
     model.train()
-    criterion = nn.MSELoss()
+    # criterion = nn.MSELoss()
+    criterion = nn.BCELoss()
     for b_i, (R, H, T, S, y) in enumerate(train_dataloader):
         optim.zero_grad()
         pred = model(R, H, T, S)
@@ -31,7 +32,8 @@ def train(model, train_dataloader, optim, epoch, verbose=0):
 
 def test(model, test_dataloader):
     model.eval()
-    criterion = nn.MSELoss(reduction='sum')
+    # criterion = nn.MSELoss(reduction='sum')
+    criterion = nn.BCELoss(reduction='sum')
     loss = 0
 
     with torch.no_grad():
@@ -45,19 +47,36 @@ def test(model, test_dataloader):
             y_total = torch.cat((y_total, y.flatten()), dim=0)
 
     loss /= len(test_dataloader.dataset)
-    error = y_total - pred_total
-    accuracy = 1- (torch.norm(error) / torch.norm(y_total))
-    r2 = r2_score(y_total, pred_total)
 
-    print('Test dataset:  Loss: {:.4f}, Accuracy: {:.4f}, R2: {:.4f}'.format(loss, accuracy, r2))
+    ## for regression Task
+    # error = y_total - pred_total
+    # accuracy = 1- (torch.norm(error) / torch.norm(y_total))
+    # r2 = r2_score(y_total, pred_total)
+    # print('Test dataset:  Loss: {:.4f}, Accuracy: {:.4f}, R2: {:.4f}'.format(loss, accuracy, r2))
 
+    # for classification Task
+    y_total = y_total.int().numpy()
+    pred_total = pred_total.numpy()
+    pred_label = np.where(pred_total > 0.5, 1, 0)
+
+    recall = recall_score(y_total, pred_label)
+    precision = precision_score(y_total, pred_label)
+    f1 = f1_score(y_total, pred_label)
+    accuracy = accuracy_score(y_total, pred_label)
+    bal_accuracy = balanced_accuracy_score(y_total, pred_label)
+    auc = roc_auc_score(y_total, pred_total)
+    print('Test dataset:  Loss: {:.4f}, Recall: {:.4f}, Precision: {:.4f}, F1: {:.4f}, Accuracy: {:.4f}, Balanced-Accuracy: {:.4f}, AUC: {:.4f}'.format(loss, recall, precision, f1, accuracy, bal_accuracy, auc))
 
 if __name__ == '__main__':
     history = pd.read_csv('./data/input_table/history_by_station.csv', parse_dates=['time'])
     station = pd.read_csv('./data/input_table/station_info.csv')
     data = history.set_index('time').T.reset_index().rename(columns={'index':'station_name'})
     data = data[data.station_name.isin(station.station_name)].set_index('station_name')
-    data = data[data.mean(axis=1).le(0.9)]
+    data = data[data.mean(axis=1).le(0.9)][:50]
+
+    # discretize
+    data = data.mask(data >= 0.5, 1.)
+    data = data.mask(data != 1., 0.)
 
     print('generating inputs...')
     N_STEPS_IN = 12
@@ -84,10 +103,17 @@ if __name__ == '__main__':
     trainset = EvcDataset(R[:-num_valid,], H[:-num_valid], T[:-num_valid,], S[:-num_valid,], Y[:-num_valid,])
     validset = EvcDataset(R[-num_valid:,], H[-num_valid:,], T[-num_valid:,], S[-num_valid:,], Y[-num_valid:,])
     print(f'Trainset Size: {len(trainset)}, Validset Size: {len(validset)}')
-    train_loader = DataLoader(trainset, batch_size=32, shuffle=True)
+
+    # addressing imbalance issue
+    weights = np.where(trainset[:][-1].flatten() == 0., 10, 1)
+    num_samples = len(trainset)
+    sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples, replacement=True, generator=None)
+    train_loader = DataLoader(trainset, batch_size=32, sampler=sampler)
+
+    # train_loader = DataLoader(trainset, batch_size=32, shuffle=True)
     valid_loader = DataLoader(validset, batch_size=1024)
 
-    START_POINT = 42
+    START_POINT = 1004
     N_DAYS = 3
     sample_idx = [START_POINT + i*n_stations for i in range(48*N_DAYS)]
     sample_data = validset[sample_idx]
@@ -101,13 +127,14 @@ if __name__ == '__main__':
         N_EPOCH = 5
         for epoch in range(1,N_EPOCH+1):
             print(f'<<Epoch {epoch}>>', end='\t')
-            train(model, train_loader, optim, epoch, 0)
+            train(model, train_loader, optim, epoch, verbose=0)
             test(model, valid_loader)
 
-        y_true = sample_data[4].flatten()
-        y_pred = model(*sample_data[:4]).flatten()
+        y_true = sample_data[4].flatten().detach().numpy()
+        y_pred = model(*sample_data[:4]).flatten().detach().numpy()
+        y_pred = np.where(y_pred > 0.5, 1, 0)
 
         fig, ax = plt.subplots(figsize=(40,8))
-        ax.plot(y_true.detach().numpy(), color='g')
-        ax.plot(y_pred.detach().numpy(), color='r')
+        ax.plot(y_true, color='g')
+        ax.plot(y_pred, color='r')
         plt.savefig(f'./images/{name}_out-{OUTPUT_IDX}_result.png')
