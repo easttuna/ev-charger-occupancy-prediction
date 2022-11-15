@@ -3,18 +3,16 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from sklearn.metrics import r2_score, recall_score, precision_score, f1_score, accuracy_score, roc_auc_score, balanced_accuracy_score
 import matplotlib.pyplot as plt
+from sklearn.metrics import recall_score, precision_score, f1_score, accuracy_score, roc_auc_score, balanced_accuracy_score
 
 from utils import split_sequences, station_features, time_features
 from dataset import EvcDataset
-from models import BaseHybrid, GatingHybrid
-from basemodels import HistoricBase, RealtimeBase, MultiSeqBase, GatingSeqBase, GatingSeqEmbedding
+from basemodels import HistoricBase, RealtimeBase, MultiSeqBase, MultiSeqHybrid, MultiSeqUmap, MultiSeqUmapEmbonly
 
 
 def train(model, train_dataloader, optim, epoch, verbose=0):
     model.train()
-    # criterion = nn.MSELoss()
     criterion = nn.BCELoss()
     for b_i, (R, H, T, S, y) in enumerate(train_dataloader):
         optim.zero_grad()
@@ -32,8 +30,7 @@ def train(model, train_dataloader, optim, epoch, verbose=0):
 
 def test(model, test_dataloader):
     model.eval()
-    # criterion = nn.MSELoss(reduction='sum')
-    criterion = nn.BCELoss(reduction='sum')
+    criterion = nn.MSELoss(reduction='sum')
     loss = 0
 
     with torch.no_grad():
@@ -47,17 +44,10 @@ def test(model, test_dataloader):
             y_total = torch.cat((y_total, y.flatten()), dim=0)
 
     loss /= len(test_dataloader.dataset)
-
-    ## for regression Task
-    # error = y_total - pred_total
-    # accuracy = 1- (torch.norm(error) / torch.norm(y_total))
-    # r2 = r2_score(y_total, pred_total)
-    # print('Test dataset:  Loss: {:.4f}, Accuracy: {:.4f}, R2: {:.4f}'.format(loss, accuracy, r2))
-
-    # for classification Task
     y_total = y_total.int().numpy()
     pred_total = pred_total.numpy()
     pred_label = np.where(pred_total > 0.5, 1, 0)
+
 
     recall = recall_score(y_total, pred_label)
     precision = precision_score(y_total, pred_label)
@@ -65,66 +55,87 @@ def test(model, test_dataloader):
     accuracy = accuracy_score(y_total, pred_label)
     bal_accuracy = balanced_accuracy_score(y_total, pred_label)
     auc = roc_auc_score(y_total, pred_total)
-    print('Test dataset:  Loss: {:.4f}, Recall: {:.4f}, Precision: {:.4f}, F1: {:.4f}, Accuracy: {:.4f}, Balanced-Accuracy: {:.4f}, AUC: {:.4f}'.format(loss, recall, precision, f1, accuracy, bal_accuracy, auc))
+
+    # print('Test dataset:  Loss: {:.4f}, Recall: {:.4f}, Precision: {:.4f}, F1: {:.4f}, Accuracy: {:.4f}, Balanced-Accuracy: {:.4f}, AUC: {:.4f}' \
+    # .format(loss, recall, precision, f1, accuracy, bal_accuracy, auc))
+    print('Test dataset:  Loss: {:.4f}, Accuracy: {:.4f}, Balanced-Accuracy: {:.4f}, AUC: {:.4f}' \
+    .format(loss, accuracy, bal_accuracy, auc))
+
 
 if __name__ == '__main__':
-    history = pd.read_csv('./data/input_table/history_by_station.csv', parse_dates=['time'])
-    station = pd.read_csv('./data/input_table/station_info.csv')
-    data = history.set_index('time').T.reset_index().rename(columns={'index':'station_name'})
-    data = data[data.station_name.isin(station.station_name)].set_index('station_name')
-    data = data[data.mean(axis=1).le(0.9)][:50]
+    # 1) Load Data
+    history = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
+    station_attributes = pd.read_csv('./data/input_table/pubstation_feature_scaled.csv')
+    station_embeddings = pd.read_csv('./data/input_table/pubstation_umap-embedding.csv')
 
-    # discretize
-    data = data.mask(data >= 0.5, 1.)
-    data = data.mask(data != 1., 0.)
+    sid_encoder = {name:idx for idx, name in enumerate(station_embeddings.sid)}
+    station_embeddings.sid = station_embeddings.sid.map(sid_encoder)
+    station_attributes.sid = station_attributes.sid.map(sid_encoder)
 
+    # transforms targer var. to binary indicator (1:high availabiltity, 0: low availability)
+    data = history.set_index('time').mask(lambda x: x < 0.5,  1).mask(lambda x: x != 1, 0)
+    data = data.T.reset_index().rename(columns={'index':'sid'})
+    data.sid = data.sid.map(sid_encoder)
+
+    data = data[data.sid.isin(station_attributes.sid)].set_index('sid')  # station feature가 있는 데이터로 한정
+    data = data[data.mean(axis=1).le(0.9)]  # False 라벨이 10% 이상 존재하는 데이터 사용
+    print(data.shape)
+    umap_embedding = torch.tensor(station_embeddings.drop(columns=['sid']).values).float()
+
+    # 2) Feature Generation
     print('generating inputs...')
-    N_STEPS_IN = 12
-    N_STEPS_OUT = 6
-    N_HISTORY = 4
+    N_IN = 12
+    N_OUT = 6
+    N_HIST = 4
 
     n_stations = data.shape[0]
-    n_windows = data.shape[1] - (N_STEPS_OUT + 336*N_HISTORY)
-    R, H, Y = split_sequences(data.values, N_STEPS_IN, N_STEPS_OUT, N_HISTORY)
-    T = time_features(data.columns, N_STEPS_IN, N_STEPS_OUT, N_HISTORY, n_stations)
-    S = station_features(station_array=data.index, station_df=station, n_windows=n_windows) 
+    n_windows = data.shape[1] - (N_OUT + 504*N_HIST)
+    R_seq, H_seq, Y_seq = split_sequences(sequences=data.values, n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST)
+    T = time_features(time_idx=data.columns, n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST, n_stations=n_stations)
+    S = station_features(station_array=data.index, station_df=station_attributes, n_windows=n_windows) 
     print('done!')
 
-    R = R[:, :, np.newaxis]
-   
-    OUTPUT_IDX = 1
-    H = H[:, OUTPUT_IDX, :, np.newaxis]
+    # 3) Set Dimension
+    R_seq = R_seq[:, :, np.newaxis]
+    OUTPUT_IDX = 3
+    H_seq = H_seq[:, OUTPUT_IDX, :, np.newaxis]
     T = T[:,OUTPUT_IDX,:]
-    Y = Y[:,OUTPUT_IDX, np.newaxis]
+    Y = Y_seq[:,OUTPUT_IDX, np.newaxis]
 
-    VALID_FRAC = 0.1
-    num_valid = int(data.shape[0] * VALID_FRAC * n_windows)
-
-    trainset = EvcDataset(R[:-num_valid,], H[:-num_valid], T[:-num_valid,], S[:-num_valid,], Y[:-num_valid,])
-    validset = EvcDataset(R[-num_valid:,], H[-num_valid:,], T[-num_valid:,], S[-num_valid:,], Y[-num_valid:,])
+    # 4) Train : Valid Split
+    TRAIN_FRAC = 0.9
+    n_train = int(data.shape[0] * TRAIN_FRAC * n_windows)
+    trainset = EvcDataset(R_seq[:n_train,], H_seq[:n_train], T[:n_train,], S[:n_train,], Y[:n_train,])
+    validset = EvcDataset(R_seq[n_train:,], H_seq[n_train:,], T[n_train:,], S[n_train:,], Y[n_train:,])
     print(f'Trainset Size: {len(trainset)}, Validset Size: {len(validset)}')
 
-    # addressing imbalance issue
-    weights = np.where(trainset[:][-1].flatten() == 0., 10, 1)
+    # 5)  Data Loader
+    # with negative over sampling
+    weights = np.where(trainset[:][-1].flatten() == 0., 5, 1)  # 5배
     num_samples = len(trainset)
     sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples, replacement=True, generator=None)
     train_loader = DataLoader(trainset, batch_size=32, sampler=sampler)
 
+    # without sampling
     # train_loader = DataLoader(trainset, batch_size=32, shuffle=True)
-    valid_loader = DataLoader(validset, batch_size=1024)
+    valid_loader = DataLoader(validset, batch_size=1024, shuffle=False)
 
     START_POINT = 1004
     N_DAYS = 3
-    sample_idx = [START_POINT + i*n_stations for i in range(48*N_DAYS)]
+    sample_idx = [START_POINT + i*n_stations for i in range(72*N_DAYS)]
     sample_data = validset[sample_idx]
 
-    models = {'HistoricBase':HistoricBase, 'RealtimeBase':RealtimeBase, 'MultiSeqBase':MultiSeqBase, 'GatingSeqBase':GatingSeqBase, 'GatingSeqEmbedding':GatingSeqEmbedding}
+    models = {'HistoricBase':HistoricBase, 'RealtimeBase':RealtimeBase, 'MultiSeqBase':MultiSeqBase, 'MultiSeqHybrid':MultiSeqHybrid, 
+    'MultiSeqUmap':MultiSeqUmap, 'MultiSeqUmapEmbonly':MultiSeqUmapEmbonly}
     for name, basemodel in models.items():
         print(f'-------{name}-------')
-        model = basemodel(hidden_size=16, embedding_dim=8)
+        if name in ['MultiSeqUmap', 'MultiSeqUmapEmbonly']:
+            model = basemodel(hidden_size=16, embedding_dim=8, pretrained_embedding=umap_embedding)
+        else:
+            model = basemodel(hidden_size=16, embedding_dim=8)
         optim = torch.optim.Adam(model.parameters())
 
-        N_EPOCH = 5
+        N_EPOCH = 15
         for epoch in range(1,N_EPOCH+1):
             print(f'<<Epoch {epoch}>>', end='\t')
             train(model, train_loader, optim, epoch, verbose=0)
@@ -137,4 +148,4 @@ if __name__ == '__main__':
         fig, ax = plt.subplots(figsize=(40,8))
         ax.plot(y_true, color='g')
         ax.plot(y_pred, color='r')
-        plt.savefig(f'./images/{name}_out-{OUTPUT_IDX}_result.png')
+        plt.savefig(f'./images/out-{OUTPUT_IDX}_{name}_result.png')
