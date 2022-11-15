@@ -9,7 +9,7 @@ class EvcDataset(Dataset):
         self.rs = torch.tensor(rs).float()
         self.hs = torch.tensor(hs).float()
         self.ts = torch.tensor(ts).int()  # keep int dtype -> goes to embedding layer
-        self.ss = torch.tensor(ss).int()  # keep int dtype -> goes to embedding layer
+        self.ss = torch.tensor(ss).float()
         self.ys = torch.tensor(ys).float()
 
     def __len__(self):
