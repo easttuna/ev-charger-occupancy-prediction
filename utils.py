@@ -3,7 +3,7 @@ import pandas as pd
 from tqdm import tqdm
 
 
-def split_sequences(sequences, n_steps_in, n_steps_out, n_history):
+def split_sequences(sequences, n_steps_in, n_steps_out, n_history, historic_sequences=None):
     """transforms target sequence table to historic/real-time/target sequence features)
 
     Args:
@@ -20,11 +20,14 @@ def split_sequences(sequences, n_steps_in, n_steps_out, n_history):
     hs = np.empty((0, n_steps_out, n_history))
     ys = np.empty((0,n_steps_out))
 
+    if historic_sequences is None:
+        historic_sequences = sequences
+
     for idx in range(n_history * 504 - n_steps_in, size - (n_steps_in + n_steps_out)):
         r = sequences[:,idx:idx+n_steps_in]
         rs = np.vstack([rs, r])
         
-        h = sequences[:, [idx + n_steps_in + out_step - 504*hist_step for out_step in range(n_steps_out) for hist_step in range(n_history, 0, -1)]]
+        h = historic_sequences[:, [idx + n_steps_in + out_step - 504*hist_step for out_step in range(n_steps_out) for hist_step in range(n_history, 0, -1)]]
         h = h.reshape(-1,n_steps_out, n_history)
         hs = np.vstack([hs, h])
 
