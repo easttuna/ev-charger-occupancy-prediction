@@ -64,7 +64,7 @@ def test(model, test_dataloader):
 
 if __name__ == '__main__':
     # 1) Load Data
-    history = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
+    station_sequence = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
     station_attributes = pd.read_csv('./data/input_table/pubstation_feature_scaled.csv')
     station_embeddings = pd.read_csv('./data/input_table/pubstation_umap-embedding.csv')
 
@@ -72,14 +72,24 @@ if __name__ == '__main__':
     station_embeddings.sid = station_embeddings.sid.map(sid_encoder)
     station_attributes.sid = station_attributes.sid.map(sid_encoder)
 
-    # transforms targer var. to binary indicator (1:high availabiltity, 0: low availability)
-    data = history.set_index('time').mask(lambda x: x < 0.5,  1).mask(lambda x: x != 1, 0)
-    data = data.T.reset_index().rename(columns={'index':'sid'})
+    data = station_sequence.set_index('time').T.reset_index().rename(columns={'index':'sid'})
     data.sid = data.sid.map(sid_encoder)
-
     data = data[data.sid.isin(station_attributes.sid)].set_index('sid')  # station feature가 있는 데이터로 한정
-    data = data[data.mean(axis=1).le(0.9)]  # False 라벨이 10% 이상 존재하는 데이터 사용
+
+    # smoothing
+    historic_data = data.T
+    historic_data.index = pd.to_datetime(historic_data.index)
+    historic_data = historic_data.resample(rule='1h').mean().T
+
+    # transforms targer var. to binary indicator (1:high availabiltity, 0: low availability)
+    data = data.mask(lambda x: x < 0.5,  1).mask(lambda x: x != 1, 0)
+    historic_data = historic_data.mask(lambda x: x < 0.5,  1).mask(lambda x: x != 1, 0)
+
+    select_idx = data.mean(axis=1).le(0.9)
+    data = data[select_idx]  # False 라벨이 10% 이상 존재하는 데이터 사용
+    historic_data = historic_data[select_idx]
     print(data.shape)
+
     umap_embedding = torch.tensor(station_embeddings.drop(columns=['sid']).values).float()
 
     # 2) Feature Generation
@@ -90,14 +100,16 @@ if __name__ == '__main__':
 
     n_stations = data.shape[0]
     n_windows = data.shape[1] - (N_OUT + 504*N_HIST)
-    R_seq, H_seq, Y_seq = split_sequences(sequences=data.values, n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST)
+    R_seq, H_seq, Y_seq = split_sequences(sequences=data.values, 
+                                          n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST, 
+                                          historic_sequences=np.repeat(historic_data.values, 3, 1))
     T = time_features(time_idx=data.columns, n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST, n_stations=n_stations)
     S = station_features(station_array=data.index, station_df=station_attributes, n_windows=n_windows) 
     print('done!')
 
     # 3) Set Dimension
     R_seq = R_seq[:, :, np.newaxis]
-    OUTPUT_IDX = 3
+    OUTPUT_IDX = 1
     H_seq = H_seq[:, OUTPUT_IDX, :, np.newaxis]
     T = T[:,OUTPUT_IDX,:]
     Y = Y_seq[:,OUTPUT_IDX, np.newaxis]
@@ -111,7 +123,8 @@ if __name__ == '__main__':
 
     # 5)  Data Loader
     # with negative over sampling
-    weights = np.where(trainset[:][-1].flatten() == 0., 5, 1)  # 5배
+    OS_RATE = 5
+    weights = np.where(trainset[:][-1].flatten() == 0., OS_RATE, 1)  # 9배
     num_samples = len(trainset)
     sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples, replacement=True, generator=None)
     train_loader = DataLoader(trainset, batch_size=32, sampler=sampler)
@@ -127,6 +140,8 @@ if __name__ == '__main__':
 
     models = {'HistoricBase':HistoricBase, 'RealtimeBase':RealtimeBase, 'MultiSeqBase':MultiSeqBase, 'MultiSeqHybrid':MultiSeqHybrid, 
     'MultiSeqUmap':MultiSeqUmap, 'MultiSeqUmapEmbonly':MultiSeqUmapEmbonly}
+    # models = {'MultiSeqBase':MultiSeqBase, 'MultiSeqHybrid':MultiSeqHybrid, 'MultiSeqUmapEmbonly':MultiSeqUmapEmbonly}
+
     for name, basemodel in models.items():
         print(f'-------{name}-------')
         if name in ['MultiSeqUmap', 'MultiSeqUmapEmbonly']:
@@ -135,7 +150,7 @@ if __name__ == '__main__':
             model = basemodel(hidden_size=16, embedding_dim=8)
         optim = torch.optim.Adam(model.parameters())
 
-        N_EPOCH = 15
+        N_EPOCH = 10
         for epoch in range(1,N_EPOCH+1):
             print(f'<<Epoch {epoch}>>', end='\t')
             train(model, train_loader, optim, epoch, verbose=0)
@@ -148,4 +163,4 @@ if __name__ == '__main__':
         fig, ax = plt.subplots(figsize=(40,8))
         ax.plot(y_true, color='g')
         ax.plot(y_pred, color='r')
-        plt.savefig(f'./images/out-{OUTPUT_IDX}_{name}_result.png')
+        plt.savefig(f'./images/out-{OUTPUT_IDX}_os-{OS_RATE}_{name}_result_smooth.png')
