@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
+import torch
 
 def split_sequences(sequences, n_steps_in, n_steps_out, n_history, historic_sequences=None):
     """transforms target sequence table to historic/real-time/target sequence features)
@@ -60,6 +60,61 @@ def station_features(station_array, station_df, n_windows, drop_id=False):
     return np.tile(df.values, (n_windows,1))
 
 
+class EvcFeatureGenerator():
+    def __init__(self, sequences, station_attributes, station_embeddings):
+        self.realtime_sequences = None
+        self.historic_sequences = None
+        self.station_attributes = station_attributes  # DataFrame
+        self.station_embeddings = station_embeddings  # 향후 임베딩이 주어지는 것이 아니라, train셋에 피팅된 transforming model로부터 생성되도록변경
+
+        sid_encoder = sid_encoder = {name:idx for idx, name in enumerate(station_embeddings.sid)}
+        self.station_embeddings.sid = self.station_embeddings.sid.map(sid_encoder)
+        self.station_attributes.sid = self.station_attributes.sid.map(sid_encoder)
+        self.umap_embedding_vectors = torch.tensor(self.station_embeddings.drop(columns=['sid']).values).float()
+
+        sequences = sequences.set_index('time').T.reset_index().rename(columns={'index':'sid'})
+        sequences.sid = sequences.sid.map(sid_encoder)
+        self.realtime_sequences = sequences[sequences.sid.isin(station_attributes.sid)].set_index('sid')  # station feature가 있는 데이터로 한정
+
+    def historic_seq_smoothing(self):
+        # smoothing
+        historic_data = self.realtime_sequences.T
+        historic_data.index = pd.to_datetime(historic_data.index)
+        historic_data = historic_data.resample(rule='1h').mean()  # 1시간 단위 smoothing
+        self.historic_sequences = historic_data
+
+    def discretize_sequences(self):
+        # binary mode만 우선 구현 (1: high avaliability, 0: low availability)
+        self.realtime_sequences = self.realtime_sequences.mask(lambda x: x < 0.5,  1).mask(lambda x: x != 1, 0)
+        if self.historic_sequences is not None:
+            self.historic_sequences = self.historic_sequences.mask(lambda x: x < 0.5,  1).mask(lambda x: x != 1, 0)
+
+    def slice_data(self, prob=0.9):
+        get_idx = self.realtime_sequences.mean(axis=1).le(prob)  # 평균 availablity가 일정 확률 이하인 station만 선택
+        self.realtime_sequences = self.realtime_sequences.loc[get_idx]
+        if self.historic_sequences is not None:
+            self.historic_sequences = self.historic_sequences.loc[get_idx]
+
+    def generate_features(self, n_in, n_out, n_hist, pred_step=1):
+        print('generating features...')
+        n_stations = self.realtime_sequences.shape[0]
+        n_windows = self.realtime_sequences.shape[1] - (n_out + 504*n_hist)  # 504 -> window size 20분 기준임 (7 * 24 * (60//3))
+        R_seq, H_seq, Y_seq = split_sequences(sequences=self.realtime_sequences.values, 
+                                              n_steps_in=n_in, n_steps_out=n_out, n_history=n_hist, 
+                                              historic_sequences=np.repeat(self.historic_sequences.values, 3, 1) \
+                                                  if self.historic_sequences is not None else None)
+        T = time_features(time_idx=data.columns, n_steps_in=n_in, n_steps_out=n_out, n_history=n_hist, n_stations=n_stations)
+        S = station_features(station_array=data.index, station_df=station_attributes, n_windows=n_windows) 
+
+        R_seq = R_seq[:, :, np.newaxis]
+        H_seq = H_seq[:, pred_step-1, :, np.newaxis]
+        T = T[:,pred_step-1,:]
+        Y = Y_seq[:,pred_step-1, np.newaxis]
+        print('done!')
+
+        return R_seq, H_seq, T, S, Y
+
+
 if __name__ == '__main__':
     # check split sequence function
     history = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
@@ -74,7 +129,7 @@ if __name__ == '__main__':
     N_OUT = 6
     N_HIST = 4
 
-    print('Split Sequences..')
+    print('Split Sequences...')
     R_seq, H_seq, Y_seq = split_sequences(sequences=data.values, n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST)
     print('Done!')
     print(R_seq.shape, H_seq.shape, Y_seq.shape)
