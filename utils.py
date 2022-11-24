@@ -65,6 +65,7 @@ def linear_split(*arrays, train_frac=0.9):
 
 
 def stationwise_split(*arrays, n_station, train_frac=0.9):
+    np.random.seed(42)  # fix random seed
     station_idx = np.random.choice(n_station, int(n_station * train_frac), replace=False)
     data_length = arrays[0].shape[0]
     n_window = data_length // n_station

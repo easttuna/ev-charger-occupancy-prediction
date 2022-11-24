@@ -63,6 +63,8 @@ def test(model, test_dataloader):
 
 
 if __name__ == '__main__':
+    np.random.seed(42)  # fix random seed
+
     sequences = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
     station_attributes = pd.read_csv('./data/input_table/pubstation_feature_scaled.csv')
     station_embeddings = pd.read_csv('./data/input_table/pubstation_umap-embedding.csv')
