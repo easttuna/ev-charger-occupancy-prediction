@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from sklearn.metrics import recall_score, precision_score, f1_score, accuracy_score, roc_auc_score, balanced_accuracy_score
 
-from utils import split_sequences, station_features, time_features, EvcFeatureGenerator
+from utils import split_sequences, time_features, station_features, linear_split, stationwise_split, EvcFeatureGenerator
 from dataset import EvcDataset
 from basemodels import HistoricBase, RealtimeBase, MultiSeqBase, MultiSeqHybrid, MultiSeqUmap, MultiSeqUmapEmbonly
 
@@ -63,68 +63,30 @@ def test(model, test_dataloader):
 
 
 if __name__ == '__main__':
-    # 1) Load Data
-    station_sequence = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
+    sequences = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
     station_attributes = pd.read_csv('./data/input_table/pubstation_feature_scaled.csv')
     station_embeddings = pd.read_csv('./data/input_table/pubstation_umap-embedding.csv')
 
-    sid_encoder = {name:idx for idx, name in enumerate(station_embeddings.sid)}
-    station_embeddings.sid = station_embeddings.sid.map(sid_encoder)
-    station_attributes.sid = station_attributes.sid.map(sid_encoder)
+    feature_generator = EvcFeatureGenerator(sequences, station_attributes, station_embeddings)
+    feature_generator.historic_seq_smoothing()  # smoothing 적용
+    feature_generator.discretize_sequences()  # 이산화 (binary)
+    feature_generator.slice_data(prob=0.9)  # mean availability 0.9 이하 선택
 
-    data = station_sequence.set_index('time').T.reset_index().rename(columns={'index':'sid'})
-    data.sid = data.sid.map(sid_encoder)
-    data = data[data.sid.isin(station_attributes.sid)].set_index('sid')  # station feature가 있는 데이터로 한정
+    PRED_STEP = 2
+    R_seq, H_seq, T, S, Y = feature_generator.generate_features(n_in=12, n_out=6, n_hist=4, pred_step=PRED_STEP)
+    print(feature_generator.n_stations)
 
-    # smoothing
-    historic_data = data.T
-    historic_data.index = pd.to_datetime(historic_data.index)
-    historic_data = historic_data.resample(rule='1h').mean().T
-
-    # transforms targer var. to binary indicator (1:high availabiltity, 0: low availability)
-    data = data.mask(lambda x: x < 0.5,  1).mask(lambda x: x != 1, 0)
-    historic_data = historic_data.mask(lambda x: x < 0.5,  1).mask(lambda x: x != 1, 0)
-
-    select_idx = data.mean(axis=1).le(0.9)
-    data = data[select_idx]  # False 라벨이 10% 이상 존재하는 데이터 사용
-    historic_data = historic_data[select_idx]
-    print(data.shape)
-
-    umap_embedding = torch.tensor(station_embeddings.drop(columns=['sid']).values).float()
-
-    # 2) Feature Generation
-    print('generating inputs...')
-    N_IN = 12
-    N_OUT = 6
-    N_HIST = 4
-
-    n_stations = data.shape[0]
-    n_windows = data.shape[1] - (N_OUT + 504*N_HIST)
-    R_seq, H_seq, Y_seq = split_sequences(sequences=data.values, 
-                                          n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST, 
-                                          historic_sequences=np.repeat(historic_data.values, 3, 1))
-    T = time_features(time_idx=data.columns, n_steps_in=N_IN, n_steps_out=N_OUT, n_history=N_HIST, n_stations=n_stations)
-    S = station_features(station_array=data.index, station_df=station_attributes, n_windows=n_windows) 
-    print('done!')
-
-    # 3) Set Dimension
-    R_seq = R_seq[:, :, np.newaxis]
-    OUTPUT_IDX = 1
-    H_seq = H_seq[:, OUTPUT_IDX, :, np.newaxis]
-    T = T[:,OUTPUT_IDX,:]
-    Y = Y_seq[:,OUTPUT_IDX, np.newaxis]
-
-    # 4) Train : Valid Split
-    TRAIN_FRAC = 0.9
-    n_train = int(data.shape[0] * TRAIN_FRAC * n_windows)
-    trainset = EvcDataset(R_seq[:n_train,], H_seq[:n_train], T[:n_train,], S[:n_train,], Y[:n_train,])
-    validset = EvcDataset(R_seq[n_train:,], H_seq[n_train:,], T[n_train:,], S[n_train:,], Y[n_train:,])
+    # 4) Train : Valid Split   
+    # train_arrays, valid_arrays = linear_split(R_seq, H_seq, T, S, Y, train_frac=0.9)
+    train_arrays, valid_arrays = stationwise_split(R_seq, H_seq, T, S, Y, n_station=feature_generator.n_stations, train_frac=0.9)
+    trainset = EvcDataset(*train_arrays)
+    validset = EvcDataset(*valid_arrays)
     print(f'Trainset Size: {len(trainset)}, Validset Size: {len(validset)}')
 
     # 5)  Data Loader
     # with negative over sampling
     OS_RATE = 5
-    weights = np.where(trainset[:][-1].flatten() == 0., OS_RATE, 1)  # 9배
+    weights = np.where(trainset[:][-1].flatten() == 0., OS_RATE, 1)  # 5배
     num_samples = len(trainset)
     sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples, replacement=True, generator=None)
     train_loader = DataLoader(trainset, batch_size=32, sampler=sampler)
@@ -135,7 +97,7 @@ if __name__ == '__main__':
 
     START_POINT = 1004
     N_DAYS = 3
-    sample_idx = [START_POINT + i*n_stations for i in range(72*N_DAYS)]
+    sample_idx = [START_POINT + i*feature_generator.realtime_sequences.shape[0] for i in range(72*N_DAYS)]
     sample_data = validset[sample_idx]
 
     models = {'HistoricBase':HistoricBase, 'RealtimeBase':RealtimeBase, 'MultiSeqBase':MultiSeqBase, 'MultiSeqHybrid':MultiSeqHybrid, 
@@ -145,7 +107,7 @@ if __name__ == '__main__':
     for name, basemodel in models.items():
         print(f'-------{name}-------')
         if name in ['MultiSeqUmap', 'MultiSeqUmapEmbonly']:
-            model = basemodel(hidden_size=16, embedding_dim=8, pretrained_embedding=umap_embedding)
+            model = basemodel(hidden_size=16, embedding_dim=8, pretrained_embedding=feature_generator.umap_embedding_vectors)
         else:
             model = basemodel(hidden_size=16, embedding_dim=8)
         optim = torch.optim.Adam(model.parameters())
@@ -163,4 +125,4 @@ if __name__ == '__main__':
         fig, ax = plt.subplots(figsize=(40,8))
         ax.plot(y_true, color='g')
         ax.plot(y_pred, color='r')
-        plt.savefig(f'./images/out-{OUTPUT_IDX}_os-{OS_RATE}_{name}_result_smooth.png')
+        plt.savefig(f'./images/out-{PRED_STEP}_os-{OS_RATE}_model-{name}_.png')
