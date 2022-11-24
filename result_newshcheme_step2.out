@@ -1,8 +1,0 @@
-nohup: ignoring input
-generating features...
-done!
-75
-Trainset Size: 308334, Validset Size: 36816
--------HistoricBase-------
-<<Epoch 1>>	Test dataset:  Loss: 0.2146, Accuracy: 0.5581, Balanced-Accuracy: 0.6070, AUC: 0.6411
-<<Epoch 2>>	
