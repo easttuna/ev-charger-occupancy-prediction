@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from sklearn.metrics import recall_score, precision_score, f1_score, accuracy_score, roc_auc_score, balanced_accuracy_score
 
-from utils import split_sequences, station_features, time_features
+from utils import split_sequences, station_features, time_features, EvcFeatureGenerator
 from dataset import EvcDataset
 from basemodels import HistoricBase, RealtimeBase, MultiSeqBase, MultiSeqHybrid, MultiSeqUmap, MultiSeqUmapEmbonly
 
