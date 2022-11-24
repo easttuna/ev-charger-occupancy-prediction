@@ -59,6 +59,21 @@ def station_features(station_array, station_df, n_windows, drop_id=False):
     return np.tile(df.values, (n_windows,1))
 
 
+def linear_split(*arrays, train_frac=0.9):
+    n_train = int(arrays[0].shape[0] * train_frac)
+    return [arr[:n_train] for arr in arrays], [arr[n_train:] for arr in arrays]
+
+
+def stationwise_split(*arrays, n_station, train_frac=0.9):
+    station_idx = np.random.choice(n_station, int(n_station * train_frac), replace=False)
+    data_length = arrays[0].shape[0]
+    n_window = data_length // n_station
+    train_idx = station_idx[:, np.newaxis] + [i*n_station for i in range(n_window)]
+    train_idx = train_idx.flatten()
+    valid_idx = list(set(range(data_length)).difference(train_idx))
+    return [arr[train_idx] for arr in arrays], [arr[valid_idx] for arr in arrays]
+
+
 class EvcFeatureGenerator():
     def __init__(self, sequences, station_attributes, station_embeddings):
         self.realtime_sequences = None
@@ -74,6 +89,10 @@ class EvcFeatureGenerator():
         sequences = sequences.set_index('time').T.reset_index().rename(columns={'index':'sid'})
         sequences.sid = sequences.sid.map(sid_encoder)
         self.realtime_sequences = sequences[sequences.sid.isin(station_attributes.sid)].set_index('sid')  # station feature가 있는 데이터로 한정
+
+    @property
+    def n_stations(self):
+        return self.realtime_sequences.shape[0]
 
     def historic_seq_smoothing(self):
         # smoothing
@@ -96,13 +115,12 @@ class EvcFeatureGenerator():
 
     def generate_features(self, n_in, n_out, n_hist, pred_step=1):
         print('generating features...')
-        n_stations = self.realtime_sequences.shape[0]
         n_windows = self.realtime_sequences.shape[1] - (n_out + 504*n_hist)  # 504 -> window size 20분 기준임 (7 * 24 * (60//3))
         R_seq, H_seq, Y_seq = split_sequences(sequences=self.realtime_sequences.values, 
                                               n_steps_in=n_in, n_steps_out=n_out, n_history=n_hist, 
                                               historic_sequences=np.repeat(self.historic_sequences.values, 3, 1) \
                                                   if self.historic_sequences is not None else None)
-        T = time_features(time_idx=self.realtime_sequences.columns, n_steps_in=n_in, n_steps_out=n_out, n_history=n_hist, n_stations=n_stations)
+        T = time_features(time_idx=self.realtime_sequences.columns, n_steps_in=n_in, n_steps_out=n_out, n_history=n_hist, n_stations=self.n_stations)
         S = station_features(station_array=self.realtime_sequences.index, station_df=self.station_attributes, n_windows=n_windows) 
 
         R_seq = R_seq[:, :, np.newaxis]
