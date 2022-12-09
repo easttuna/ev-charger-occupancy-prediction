@@ -38,7 +38,7 @@ def split_sequences(sequences, n_steps_in, n_steps_out, n_history, historic_sequ
 
 def time_features(time_idx, n_steps_in, n_steps_out, n_history, n_stations):
     df = pd.DataFrame(data=pd.to_datetime(time_idx), columns=['time'])
-    df['t_index']  = df['time'].dt.hour.multiply(60).add(df['time'].dt.minute).floordiv(30)
+    df['t_index']  = df['time'].dt.hour.multiply(60).add(df['time'].dt.minute).floordiv(20)
     df['dow'] = df['time'].dt.dayofweek
     df['weekend'] = df.dow.isin([5,6]).astype(np.int64)
     df = df[['t_index', 'dow', 'weekend']]
@@ -59,8 +59,9 @@ def station_features(station_array, station_df, n_windows, drop_id=False):
     return np.tile(df.values, (n_windows,1))
 
 
-def linear_split(*arrays, train_frac=0.9):
-    n_train = int(arrays[0].shape[0] * train_frac)
+def linear_split(*arrays, n_station, train_frac=0.9):
+    data_length = arrays[0].shape[0]
+    n_train = int((data_length // n_station) * train_frac) * n_station
     return [arr[:n_train] for arr in arrays], [arr[n_train:] for arr in arrays]
 
 
@@ -70,8 +71,8 @@ def stationwise_split(*arrays, n_station, train_frac=0.9):
     data_length = arrays[0].shape[0]
     n_window = data_length // n_station
     train_idx = station_idx[:, np.newaxis] + [i*n_station for i in range(n_window)]
-    train_idx = train_idx.flatten()
-    valid_idx = list(set(range(data_length)).difference(train_idx))
+    train_idx = np.sort(train_idx.flatten())
+    valid_idx = sorted(set(range(data_length)).difference(train_idx))
     return [arr[train_idx] for arr in arrays], [arr[valid_idx] for arr in arrays]
 
 
@@ -82,7 +83,7 @@ class EvcFeatureGenerator():
         self.station_attributes = station_attributes  # DataFrame
         self.station_embeddings = station_embeddings  # 향후 임베딩이 주어지는 것이 아니라, train셋에 피팅된 transforming model로부터 생성되도록변경
 
-        sid_encoder = sid_encoder = {name:idx for idx, name in enumerate(station_embeddings.sid)}
+        sid_encoder = {name:idx for idx, name in enumerate(self.station_embeddings.sid)}
         self.station_embeddings.sid = self.station_embeddings.sid.map(sid_encoder)
         self.station_attributes.sid = self.station_attributes.sid.map(sid_encoder)
         self.umap_embedding_vectors = torch.tensor(self.station_embeddings.drop(columns=['sid']).values).float()
@@ -116,7 +117,7 @@ class EvcFeatureGenerator():
 
     def generate_features(self, n_in, n_out, n_hist, pred_step=1):
         print('generating features...')
-        n_windows = self.realtime_sequences.shape[1] - (n_out + 504*n_hist)  # 504 -> window size 20분 기준임 (7 * 24 * (60//3))
+        n_windows = self.realtime_sequences.shape[1] - (n_out + 504*n_hist)  # 504 -> window size 30분 기준임 (7 * 24 * (60//30))
         R_seq, H_seq, Y_seq = split_sequences(sequences=self.realtime_sequences.values, 
                                               n_steps_in=n_in, n_steps_out=n_out, n_history=n_hist, 
                                               historic_sequences=np.repeat(self.historic_sequences.values, 3, 1) \
@@ -134,15 +135,31 @@ class EvcFeatureGenerator():
 
 
 if __name__ == '__main__':
+    # # check split sequence function
+    # sequences = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
+    # station_attributes = pd.read_csv('./data/input_table/pubstation_feature_scaled.csv')
+    # station_embeddings = pd.read_csv('./data/input_table/pubstation_umap-embedding.csv')
+
+    # feature_generator = EvcFeatureGenerator(sequences, station_attributes, station_embeddings)
+    # feature_generator.historic_seq_smoothing()  # smoothing 적용
+    # feature_generator.discretize_sequences()  # 이산화 (binary)
+    # feature_generator.slice_data(prob=0.9)  # mean availability 0.9 이하 선택
+
+    # R_seq, H_seq, T, S, Y = feature_generator.generate_features(n_in=12, n_out=6, n_hist=4, pred_step=1)
+    # print(R_seq.shape, H_seq.shape, T.shape, S.shape, Y.shape, end='\n')
+
+
     # check split sequence function
-    sequences = pd.read_csv('./data/input_table/history_by_station_pub.csv', parse_dates=['time'])
-    station_attributes = pd.read_csv('./data/input_table/pubstation_feature_scaled.csv')
-    station_embeddings = pd.read_csv('./data/input_table/pubstation_umap-embedding.csv')
+    sequences = pd.read_csv('./data/input_table/by_test_frac/0.9/train_sequences_multicls_size30_bin3.csv', parse_dates=['time'])
+    print(sequences.shape)
+    station_attributes = pd.read_csv('./data/input_table/by_test_frac/0.9/station_attributes.csv')
+    station_embeddings = pd.read_csv('./data/input_table/by_test_frac/0.9/station_embedding.csv')
 
     feature_generator = EvcFeatureGenerator(sequences, station_attributes, station_embeddings)
-    feature_generator.historic_seq_smoothing()  # smoothing 적용
-    feature_generator.discretize_sequences()  # 이산화 (binary)
-    feature_generator.slice_data(prob=0.9)  # mean availability 0.9 이하 선택
+    print(feature_generator.realtime_sequences.shape)
+    # feature_generator.historic_seq_smoothing()  # smoothing 적용
+    # feature_generator.discretize_sequences()  # 이산화 (binary)
+    # feature_generator.slice_data(prob=0.9)  # mean availability 0.9 이하 선택
 
     R_seq, H_seq, T, S, Y = feature_generator.generate_features(n_in=12, n_out=6, n_hist=4, pred_step=1)
     print(R_seq.shape, H_seq.shape, T.shape, S.shape, Y.shape, end='\n')
