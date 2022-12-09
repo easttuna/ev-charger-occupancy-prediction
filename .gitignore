@@ -134,6 +134,7 @@ data/
 # model eval result
 results/
 images/
+metric_table/
 
 # log
 *.out
