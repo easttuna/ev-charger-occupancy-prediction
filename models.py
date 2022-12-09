@@ -139,8 +139,7 @@ class GatingHybrid(nn.Module):
         fc_out = self.top(fc_out)
         return torch.sigmoid(fc_out)
 
-
-
+        
 class DcodeHybrid(nn.Module):
     def __init__(self, hidden_size, station_embedding_dim, embedding_dim):
         super().__init__()
