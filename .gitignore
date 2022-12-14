@@ -138,3 +138,6 @@ metric_table/
 
 # log
 *.out
+
+# execution
+*.sh
