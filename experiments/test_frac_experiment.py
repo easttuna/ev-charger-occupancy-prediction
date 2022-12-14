@@ -72,7 +72,7 @@ def run(args):
     train_seq = pd.read_csv(osp.join(data_dir, 'train_sequences_cls.csv'), parse_dates=['time'])
     test_seq = pd.read_csv(osp.join(data_dir, 'test_sequences_cls.csv'), parse_dates=['time'])
 
-    station_attributes = pd.read_csv(osp.join(data_dir, 'station_attributes.csv'))
+    station_attributes = pd.read_csv(osp.join(data_dir, 'station_attributes_ㄱㄴ0.csv'))
     station_embeddings = pd.read_csv(osp.join(data_dir, 'station_embedding.csv'))
     train_generator = EvcFeatureGenerator(train_seq, station_attributes.copy(), station_embeddings.copy())
     test_generator = EvcFeatureGenerator(test_seq, station_attributes.copy(), station_embeddings.copy())
@@ -122,7 +122,7 @@ def run(args):
             model = basemodel(hidden_size=32, embedding_dim=4, pretrained_embedding=train_generator.umap_embedding_vectors, dropout_p=args.dropout_p, freeze_embedding=True)
         else:
             model = basemodel(hidden_size=32, embedding_dim=4, dropout_p=args.dropout_p)
-        optim = torch.optim.Adam(model.parameters(), lr=1e-3)
+        optim = torch.optim.Adam(model.parameters(), lr=1e-4)
 
         for epoch in range(1, args.n_epoch + 1):
             print(f'<<Epoch {epoch}>>', end='\n')

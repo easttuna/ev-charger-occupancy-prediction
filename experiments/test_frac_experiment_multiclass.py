@@ -76,11 +76,11 @@ def run(args):
     np.random.seed(42)  # fix random seed
     data_dir = osp.join('./data/input_table/by_test_frac/', args.test_frac)
 
-    train_seq = pd.read_csv(osp.join(data_dir, 'train_sequences_multicls_size20_bin3_dim8.csv'), parse_dates=['time'])
-    test_seq = pd.read_csv(osp.join(data_dir, 'test_sequences_multicls_size20_bin3_dim8.csv'), parse_dates=['time'])
+    train_seq = pd.read_csv(osp.join(data_dir, 'train_sequences_multicls_size20_bin3_dim8_rs0.csv'), parse_dates=['time'])
+    test_seq = pd.read_csv(osp.join(data_dir, 'test_sequences_multicls_size20_bin3_dim8_rs0.csv'), parse_dates=['time'])
 
-    station_attributes = pd.read_csv(osp.join(data_dir, 'station_attributes.csv'))
-    station_embeddings = pd.read_csv(osp.join(data_dir, 'station_embedding.csv'))
+    station_attributes = pd.read_csv(osp.join(data_dir, 'station_attributes_rs0.csv'))
+    station_embeddings = pd.read_csv(osp.join(data_dir, 'station_embedding_rs0.csv'))
     train_generator = EvcFeatureGenerator(train_seq, station_attributes.copy(), station_embeddings.copy())
     test_generator = EvcFeatureGenerator(test_seq, station_attributes.copy(), station_embeddings.copy())
 
@@ -118,11 +118,11 @@ def run(args):
     result_metrics = []
     for name, basemodel in models.items():
         print(f'-------{name}-------')
-        if name in ['MultiSeqUmap', 'MultiSeqHybridUmap', 'MultiSeqUmapGating', 'MultiSeqUmapEarlyGating']:
+        if name in ['MultiSeqUmap', 'MultiSeqHybridUmap', 'MultiSeqUmapGating', 'MultiSeqUmapEarlyGating', 'MultiSeqHybridUmapEarlyGating']:
             model = basemodel(n_labels=3, hidden_size=32, embedding_dim=4, pretrained_embedding=train_generator.umap_embedding_vectors, dropout_p=args.dropout_p, freeze_embedding=True)
         else:
             model = basemodel(n_labels=3, hidden_size=32, embedding_dim=4, dropout_p=args.dropout_p)
-        optim = torch.optim.Adam(model.parameters(), lr=1e-3)
+        optim = torch.optim.Adam(model.parameters(), lr=1e-4)
 
         for epoch in range(1, args.n_epoch + 1):
             print(f'<<Epoch {epoch}>>', end='\n')
@@ -133,7 +133,7 @@ def run(args):
         result_metrics.append(model_metrics)
 
     result_df = pd.DataFrame(result_metrics)
-    result_df.to_csv(f'./metric_table/metrics_testfrac-{args.test_frac}_predstep-{args.pred_step}.csv', index=False)
+    result_df.to_csv(f'./metric_table/metrics_testfrac-{args.test_frac}_predstep-{args.pred_step}_rs0.csv', index=False)
 
 
 if __name__ == '__main__':
